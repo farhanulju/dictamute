@@ -1,4 +1,4 @@
-// TeamsMicHold: mutes Microsoft Teams (only Teams, by pressing its own mic button) while
+// DictaMute: mutes Microsoft Teams (only Teams, by pressing its own mic button) while
 // Wispr Flow is dictating, so call participants don't hear your dictation.
 //
 // - Mouse button 5 (XButton2) arms it. The click is passed through untouched for Wispr.
@@ -22,6 +22,14 @@ using System.Text;
 using System.Threading;
 using System.Windows.Automation;
 using System.Windows.Forms;
+using Microsoft.Win32;
+
+[assembly: System.Reflection.AssemblyTitle("DictaMute")]
+[assembly: System.Reflection.AssemblyProduct("DictaMute")]
+[assembly: System.Reflection.AssemblyDescription("Mutes only Microsoft Teams while Wispr Flow dictates")]
+[assembly: System.Reflection.AssemblyCopyright("MIT License")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
 
 static class Program
 {
@@ -29,16 +37,16 @@ static class Program
     static void Main()
     {
         bool created;
-        using (var mutex = new Mutex(true, "TeamsMicHold.SingleInstance", out created))
+        using (var mutex = new Mutex(true, "DictaMute.SingleInstance", out created))
         {
             if (!created) return;
             Application.EnableVisualStyles();
-            Application.Run(new TeamsMicHoldApp());
+            Application.Run(new DictaMuteApp());
         }
     }
 }
 
-class TeamsMicHoldApp : ApplicationContext
+class DictaMuteApp : ApplicationContext
 {
     const int WH_MOUSE_LL = 14;
     const int WM_XBUTTONDOWN = 0x020B;
@@ -64,7 +72,7 @@ class TeamsMicHoldApp : ApplicationContext
     enum State { Idle, Arming, Recording }
 
     readonly string dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TeamsMicHold");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DictaMute");
     string LogPath { get { return Path.Combine(dir, "log.txt"); } }
 
     readonly HookProc hookProc;
@@ -76,7 +84,7 @@ class TeamsMicHoldApp : ApplicationContext
     volatile bool stopping;
     readonly Thread worker;
 
-    public TeamsMicHoldApp()
+    public DictaMuteApp()
     {
         Directory.CreateDirectory(dir);
 
@@ -84,16 +92,29 @@ class TeamsMicHoldApp : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.Add(statusItem);
         menu.Items.Add(new ToolStripSeparator());
+        var autostart = new ToolStripMenuItem("Start with Windows") { Checked = Autostart.IsOn(), CheckOnClick = true };
+        autostart.CheckedChanged += delegate { Autostart.Set(autostart.Checked); };
+        menu.Items.Add(autostart);
         menu.Items.Add("Open log", null, delegate { if (File.Exists(LogPath)) Process.Start("notepad.exe", "\"" + LogPath + "\""); });
         menu.Items.Add("Exit", null, delegate { Shutdown(); });
-        tray = new NotifyIcon { Icon = SystemIcons.Shield, Visible = true, ContextMenuStrip = menu, Text = "TeamsMicHold" };
+        tray = new NotifyIcon { Icon = SystemIcons.Shield, Visible = true, ContextMenuStrip = menu, Text = "DictaMute" };
+
+        // First run (e.g. the exe was just downloaded): say where the app went.
+        string firstRunMarker = Path.Combine(dir, "first-run-done");
+        if (!File.Exists(firstRunMarker))
+        {
+            tray.ShowBalloonTip(8000, "DictaMute is running",
+                "It lives in the system tray. Right-click the shield icon for \"Start with Windows\" and Exit.",
+                ToolTipIcon.Info);
+            try { File.WriteAllText(firstRunMarker, DateTime.Now.ToString("o")); } catch { }
+        }
 
         var uiTimer = new System.Windows.Forms.Timer { Interval = 500 };
         uiTimer.Tick += delegate
         {
             string s = status;
             statusItem.Text = s;
-            string t = "TeamsMicHold: " + s;
+            string t = "DictaMute: " + s;
             tray.Text = t.Length > 63 ? t.Substring(0, 63) : t;
         };
         uiTimer.Start();
@@ -103,7 +124,7 @@ class TeamsMicHoldApp : ApplicationContext
         if (hook == IntPtr.Zero) Log("SetWindowsHookEx failed: " + Marshal.GetLastWin32Error());
 
         // All audio/UIA work happens off the UI thread so the mouse hook never waits on it.
-        worker = new Thread(WorkerLoop) { IsBackground = true, Name = "TeamsMicHold worker" };
+        worker = new Thread(WorkerLoop) { IsBackground = true, Name = "DictaMute worker" };
         worker.SetApartmentState(ApartmentState.MTA);
         worker.Start();
         Log("started");
@@ -287,6 +308,33 @@ class TeamsMicHoldApp : ApplicationContext
         tray.Visible = false;
         tray.Dispose();
         ExitThread();
+    }
+}
+
+/// <summary>"Start with Windows": a per-user Run entry pointing at this exe, wherever it lives.</summary>
+static class Autostart
+{
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    const string ValueName = "DictaMute";
+
+    static string Command { get { return "\"" + Application.ExecutablePath + "\""; } }
+
+    public static bool IsOn()
+    {
+        using (var key = Registry.CurrentUser.OpenSubKey(RunKey))
+        {
+            var value = key == null ? null : key.GetValue(ValueName) as string;
+            return value != null && string.Equals(value, Command, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    public static void Set(bool on)
+    {
+        using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
+        {
+            if (on) key.SetValue(ValueName, Command);
+            else key.DeleteValue(ValueName, false);
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-// Lists active microphone capture sessions (process + state). Diagnostic for TeamsMicHold.
+// Lists active microphone capture sessions (process + state). Diagnostic for DictaMute.
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;

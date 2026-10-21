@@ -1,10 +1,10 @@
 @echo off
-rem Stops TeamsMicHold, removes it from Startup, and deletes %LOCALAPPDATA%\TeamsMicHold.
+rem Stops DictaMute, turns off "Start with Windows", and deletes %LOCALAPPDATA%\DictaMute
+rem (the installed copy, its log and settings). A downloaded DictaMute.exe elsewhere is left alone.
 setlocal
-taskkill /im TeamsMicHold.exe >nul 2>&1
+taskkill /im DictaMute.exe >nul 2>&1
 timeout /t 2 /nobreak >nul
-taskkill /im TeamsMicHold.exe /f >nul 2>&1
-powershell -NoProfile -Command ^
-  "Remove-Item -ErrorAction SilentlyContinue ([Environment]::GetFolderPath('Startup') + '\TeamsMicHold.lnk')"
-if exist "%LOCALAPPDATA%\TeamsMicHold" rmdir /s /q "%LOCALAPPDATA%\TeamsMicHold"
-echo TeamsMicHold removed.
+taskkill /im DictaMute.exe /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v DictaMute /f >nul 2>&1
+if exist "%LOCALAPPDATA%\DictaMute" rmdir /s /q "%LOCALAPPDATA%\DictaMute"
+echo DictaMute removed.
