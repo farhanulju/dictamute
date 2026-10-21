@@ -1,5 +1,7 @@
-// Build-time helper: writes the exe's multi-size .ico (PNG frames) and an optional preview sheet.
+// Build-time helper: writes the exe's multi-size .ico (PNG frames) and an optional preview sheet,
+// or the macOS app's .iconset folder (turned into AppIcon.icns by iconutil on the Mac build).
 //   MakeIcon.exe <out.ico> [preview.png]
+//   MakeIcon.exe --iconset <AppIcon.iconset>
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -12,6 +14,8 @@ static class MakeIcon
 
     static void Main(string[] args)
     {
+        if (args[0] == "--iconset") { Iconset(args[1]); return; }
+
         var frames = new List<byte[]>();
         foreach (int size in Sizes)
             using (var bmp = Icons.Render(IconState.App, size))
@@ -33,6 +37,19 @@ static class MakeIcon
         }
 
         if (args.Length > 1) Preview(args[1]);
+    }
+
+    // The file names and sizes iconutil expects: icon_16x16.png ... icon_512x512@2x.png.
+    static void Iconset(string dir)
+    {
+        Directory.CreateDirectory(dir);
+        foreach (int points in new[] { 16, 32, 128, 256, 512 })
+            for (int scale = 1; scale <= 2; scale++)
+            {
+                string name = "icon_" + points + "x" + points + (scale == 2 ? "@2x" : "") + ".png";
+                using (var bmp = Icons.Render(IconState.App, points * scale))
+                    bmp.Save(Path.Combine(dir, name), ImageFormat.Png);
+            }
     }
 
     // Each state at tray sizes on light and dark taskbars, plus the app icon large.

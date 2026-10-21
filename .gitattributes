@@ -1,2 +1,5 @@
 *.cmd text eol=crlf
 *.cs text eol=crlf
+*.sh text eol=lf
+*.swift text eol=lf
+*.yml text eol=lf

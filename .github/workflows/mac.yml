@@ -1,0 +1,24 @@
+name: macOS build
+
+on:
+  push:
+    paths: ["mac/**", ".github/workflows/mac.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+
+      - name: Build DictaMute.app (universal)
+        run: bash mac/scripts/bundle.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictaMute-mac
+          path: mac/dist/DictaMute-mac.zip
+          if-no-files-found: error

@@ -2,3 +2,5 @@ bin/
 *.exe
 *.pdb
 log.txt
+mac/.build/
+mac/dist/
