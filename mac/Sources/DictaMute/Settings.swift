@@ -2,7 +2,7 @@
 // Same JSON shape as the Windows version, stored in ~/Library/Application Support/DictaMute.
 import Foundation
 
-let version = "1.3.0-beta.1"
+let appVersion = "1.3.0-beta.1"
 
 struct AppRule: Codable, Identifiable, Equatable {
     var id = UUID()

@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onDown = { [weak self] key, held in self?.engine.keyDown(key, held: held) }
         if !hotkeys.start() { Log.write("event tap not available yet (Input Monitoring permission?)") }
 
-        Log.write("started \(version): " + settings.apps.map { "\($0.name) [\($0.enabled ? Shortcut.describe($0.shortcut) : "off")]" }.joined(separator: "; "))
+        Log.write("started \(appVersion): " + settings.apps.map { "\($0.name) [\($0.enabled ? Shortcut.describe($0.shortcut) : "off")]" }.joined(separator: "; "))
         if firstRun { openSettings() }
     }
 

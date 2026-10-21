@@ -28,7 +28,7 @@ struct SettingsView: View {
                 Text(problem).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                Text("DictaMute \(version) · experimental macOS build").foregroundStyle(.secondary).font(.caption)
+                Text("DictaMute \(appVersion) · experimental macOS build").foregroundStyle(.secondary).font(.caption)
                 Spacer()
                 Button("Save") { save() }.keyboardShortcut(.defaultAction)
             }
