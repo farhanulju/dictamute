@@ -9,10 +9,16 @@ if not exist "%FW%\csc.exe" (
   exit /b 1
 )
 if not exist bin mkdir bin
-"%FW%\csc.exe" /nologo /optimize /target:winexe /out:bin\DictaMute.exe ^
+
+rem The exe's icon is drawn by the same code as the tray icons (src\Icons.cs).
+"%FW%\csc.exe" /nologo /target:exe /out:bin\MakeIcon.exe /r:System.Drawing.dll ^
+  src\MakeIcon.cs src\Icons.cs || exit /b 1
+bin\MakeIcon.exe bin\DictaMute.ico || exit /b 1
+
+"%FW%\csc.exe" /nologo /optimize /target:winexe /out:bin\DictaMute.exe /win32icon:bin\DictaMute.ico ^
   /r:System.Windows.Forms.dll /r:System.Drawing.dll ^
   /r:"%FW%\WPF\UIAutomationClient.dll" /r:"%FW%\WPF\UIAutomationTypes.dll" /r:"%FW%\WPF\WindowsBase.dll" ^
-  src\DictaMute.cs src\AudioCapture.cs || exit /b 1
+  src\DictaMute.cs src\Icons.cs src\AudioCapture.cs || exit /b 1
 "%FW%\csc.exe" /nologo /optimize /target:exe /out:bin\CaptureProbe.exe ^
   src\CaptureProbe.cs src\AudioCapture.cs || exit /b 1
 echo Built bin\DictaMute.exe

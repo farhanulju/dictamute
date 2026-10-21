@@ -28,8 +28,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("DictaMute")]
 [assembly: System.Reflection.AssemblyDescription("Mutes only Microsoft Teams while Wispr Flow dictates")]
 [assembly: System.Reflection.AssemblyCopyright("MIT License")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 static class Program
 {
@@ -81,6 +81,8 @@ class DictaMuteApp : ApplicationContext
     readonly ToolStripMenuItem statusItem;
     readonly BlockingCollection<DateTime> presses = new BlockingCollection<DateTime>();
     volatile string status = "Starting";
+    volatile int iconState = (int)IconState.Idle;
+    readonly Icon[] trayIcons = new Icon[3]; // Idle, InCall, Muting
     volatile bool stopping;
     readonly Thread worker;
 
@@ -97,25 +99,30 @@ class DictaMuteApp : ApplicationContext
         menu.Items.Add(autostart);
         menu.Items.Add("Open log", null, delegate { if (File.Exists(LogPath)) Process.Start("notepad.exe", "\"" + LogPath + "\""); });
         menu.Items.Add("Exit", null, delegate { Shutdown(); });
-        tray = new NotifyIcon { Icon = SystemIcons.Shield, Visible = true, ContextMenuStrip = menu, Text = "DictaMute" };
+        int iconSize = SystemInformation.SmallIconSize.Width; // 16 at 100% scaling, 32 at 200%
+        for (int i = 0; i < trayIcons.Length; i++) trayIcons[i] = Icons.Tray((IconState)i, iconSize);
+        tray = new NotifyIcon { Icon = trayIcons[0], Visible = true, ContextMenuStrip = menu, Text = "DictaMute" };
 
         // First run (e.g. the exe was just downloaded): say where the app went.
         string firstRunMarker = Path.Combine(dir, "first-run-done");
         if (!File.Exists(firstRunMarker))
         {
             tray.ShowBalloonTip(8000, "DictaMute is running",
-                "It lives in the system tray. Right-click the shield icon for \"Start with Windows\" and Exit.",
+                "It lives in the system tray. Right-click the microphone icon for \"Start with Windows\" and Exit.",
                 ToolTipIcon.Info);
             try { File.WriteAllText(firstRunMarker, DateTime.Now.ToString("o")); } catch { }
         }
 
-        var uiTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        // Fast enough that the red "muting" icon appears with the mute.
+        var uiTimer = new System.Windows.Forms.Timer { Interval = 150 };
         uiTimer.Tick += delegate
         {
             string s = status;
             statusItem.Text = s;
             string t = "DictaMute: " + s;
             tray.Text = t.Length > 63 ? t.Substring(0, 63) : t;
+            var icon = trayIcons[iconState];
+            if (tray.Icon != icon) tray.Icon = icon;
         };
         uiTimer.Start();
 
@@ -182,6 +189,7 @@ class DictaMuteApp : ApplicationContext
                 status = !teamsCapturing ? "Not in a call"
                        : state == State.Idle ? "In a call"
                        : ownMute ? "Muted Teams for dictation" : "Dictating";
+                iconState = (int)(!teamsCapturing ? IconState.Idle : ownMute ? IconState.Muting : IconState.InCall);
             }
             catch (Exception ex) { Log("worker error: " + ex.Message); }
         }

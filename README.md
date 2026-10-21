@@ -35,10 +35,11 @@ Works with Wispr's push-to-talk set to **press-and-hold** or **click (toggle)**.
 2. Put it somewhere permanent (e.g. `Documents\DictaMute\`) and double-click it.
 3. Windows SmartScreen may say *"Windows protected your PC"* because the exe isn't code-signed.
    Click **More info → Run anyway**. (Prefer not to? Build it yourself — see below.)
-4. A shield icon appears in the system tray. Right-click it and tick **Start with Windows**
+4. A microphone icon appears in the system tray. Right-click it and tick **Start with Windows**
    so it runs every time you sign in.
 
-The tray menu also has the current status (`Not in a call` / `In a call` / `Muted Teams for
+The icon shows the state at a glance: **grey** = not in a call, **blue** = watching your call,
+**red with a slash** = muting Teams while you dictate. The tray menu also has the current status (`Not in a call` / `In a call` / `Muted Teams for
 dictation`), **Open log**, and **Exit**.
 
 To remove: untick **Start with Windows**, choose **Exit**, and delete the exe (plus
@@ -82,6 +83,8 @@ Windows, and starts it. `uninstall.cmd` undoes all of that. `build.cmd` only bui
 | File | What it is |
 |------|-----------|
 | `src/DictaMute.cs` | Tray app: mouse hook, state machine, Teams UI Automation, focus restore, autostart |
+| `src/Icons.cs` | Tray and app icons, drawn in code at each size |
+| `src/MakeIcon.cs` | Build-time helper that writes the exe's multi-size `.ico` |
 | `src/AudioCapture.cs` | Core Audio interop: which processes have an active mic stream |
 | `src/CaptureProbe.cs` | Small console diagnostic built on `AudioCapture.cs` |
 | `build.cmd` / `install.cmd` / `uninstall.cmd` | Build, install + autostart, remove |
