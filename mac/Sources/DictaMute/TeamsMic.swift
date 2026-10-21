@@ -26,23 +26,37 @@ final class TeamsMic {
         AXUIElementSetMessagingTimeout(axApp, 1.0)
         // Chromium-based apps only build their web accessibility tree once a client asks for it.
         AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        if search(axApp) { return }
+        // Some Chromium builds only respond to the VoiceOver-style flag. It can make window
+        // managers animate oddly, so it's the fallback rather than the default.
+        if !triedEnhancedUI {
+            triedEnhancedUI = true
+            AXUIElementSetAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            log("retrying with AXEnhancedUserInterface")
+            _ = search(axApp)
+        }
+    }
 
+    private var triedEnhancedUI = false
+
+    private func search(_ axApp: AXUIElement) -> Bool {
         let started = Date()
         var queue: [(AXUIElement, Int)] = (TeamsMic.children(axApp, kAXWindowsAttribute) ?? []).map { ($0, 0) }
-        var visited = 0
-        while !queue.isEmpty, visited < 30000, Date().timeIntervalSince(started) < 2.0 {
-            let (element, depth) = queue.removeFirst()
-            visited += 1
+        var next = 0
+        while next < queue.count, next < 30000, Date().timeIntervalSince(started) < 2.0 {
+            let (element, depth) = queue[next]
+            next += 1
             if TeamsMic.isMicButton(element) {
                 button = element
                 log("found Teams mic button: " + TeamsMic.describe(element))
-                return
+                return true
             }
             if depth < 80, let kids = TeamsMic.children(element, kAXChildrenAttribute) {
                 queue.append(contentsOf: kids.map { ($0, depth + 1) })
             }
         }
-        log("Teams mic button not found (searched \(visited) elements)")
+        log("Teams mic button not found (searched \(next) elements" + (AXIsProcessTrusted() ? ")" : "; Accessibility permission missing)"))
+        return false
     }
 
     /// true = muted, false = live, nil = no call / button not found.

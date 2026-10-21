@@ -4,7 +4,8 @@ Mute **only Microsoft Teams** while you talk to your dictation app — [Wispr Fl
 Claude's voice input, or anything else — so people in your call don't hear your dictation.
 Your microphone itself is never muted, so the dictation app keeps hearing you.
 
-A tiny Windows tray app: one ~30 KB exe, no installer, no dependencies.
+A tiny Windows tray app: one ~30 KB exe, no installer, no dependencies. There's also an
+[experimental macOS build](#macos-experimental-untested).
 
 ![DictaMute settings](docs/screenshots/settings.png)
 
@@ -90,6 +91,46 @@ when a shortcut fires, which can include meeting names.
 - Relies on Teams' internal button id (`microphone-button`) and English labels; a Teams update
   or another UI language may need a code change.
 
+## macOS (experimental, untested)
+
+> **This build has never been run on a real Mac.** It compiles on GitHub's macOS runners and
+> mirrors the Windows logic, but nobody has tried it with Teams yet. If you do, please
+> [open an issue](https://github.com/farhanulju/dictamute/issues) with what happened and the
+> lines from `~/Library/Logs/DictaMute.log`.
+
+**Requirements:** macOS 14 Sonoma or later (Apple Silicon or Intel), the new Microsoft Teams in English.
+
+**Install**
+
+1. Download `DictaMute-mac.zip` from the [releases](https://github.com/farhanulju/dictamute/releases)
+   (look for a `-mac-beta` pre-release), unzip it, and move **DictaMute.app** to **Applications**.
+2. The app isn't notarized by Apple, so macOS blocks the first launch. Right-click it → **Open** →
+   **Open**, or run `xattr -dr com.apple.quarantine /Applications/DictaMute.app` once in Terminal.
+3. Grant the two permissions it asks for in **System Settings → Privacy & Security**:
+   - **Accessibility** — to read and press Teams' mic button.
+   - **Input Monitoring** — only needed for apps in shortcut mode, to notice the shortcut.
+4. A microphone appears in the menu bar. **Settings…** lists your dictation apps; **Launch at Login**
+   works once the app is in Applications.
+
+**Differences from Windows**
+
+- The default Wispr Flow shortcut is **Fn** (Wispr's Mac default). Shortcuts are typed rather than
+  recorded, e.g. `Fn`, `Ctrl+Option+Space`, `Mouse5`. Modifiers: `Ctrl`, `Shift`, `Option`, `Cmd`, `Fn`.
+- Apps are named as they appear in the Applications folder (`Wispr Flow`, `Claude`). Helper processes
+  (`Claude Helper` etc.) count as their app.
+- Menu-bar icon: outline mic = not in a call, filled mic = in a call, red slashed mic = muting Teams.
+
+**Not yet verified**
+
+- That DictaMute finds Teams' mic button through macOS accessibility (it looks for the web id
+  `microphone-button` or a "Mute mic" / "Unmute mic" label, and logs what it found). If it can't, it
+  tries again after setting `AXEnhancedUserInterface` on Teams, which can make some window managers
+  animate oddly until Teams restarts.
+- That Core Audio reports Teams, Wispr Flow and Claude as "running input" exactly while they listen.
+- That pressing the button doesn't steal focus (it restores the previous app if it does).
+
+**Build it yourself** (on a Mac with Xcode 15+): `bash mac/scripts/bundle.sh` → `mac/dist/DictaMute.app`.
+
 ## Build from source
 
 No SDK needed — it uses the C# compiler that ships with Windows.
@@ -123,6 +164,7 @@ Windows, and starts it. `uninstall.cmd` undoes all of that. `build.cmd` only bui
 | `src/AudioCapture.cs` | Core Audio interop: which processes have an active mic stream |
 | `src/CaptureProbe.cs` | Small console diagnostic built on `AudioCapture.cs` |
 | `build.cmd` / `install.cmd` / `uninstall.cmd` | Build, install + autostart, remove |
+| `mac/` | Experimental macOS menu-bar app (Swift); `mac/scripts/bundle.sh` builds it, `.github/workflows/mac.yml` runs that on every change |
 
 ## License
 

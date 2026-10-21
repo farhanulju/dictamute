@@ -38,7 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Hotkeys.requestPermission()
         }
         hotkeys.onDown = { [weak self] key, held in self?.engine.keyDown(key, held: held) }
-        if !hotkeys.start() { Log.write("event tap not available yet (Input Monitoring permission?)") }
+        if !hotkeys.start() {
+            Log.write("event tap not available yet (Input Monitoring permission?)")
+            // Start listening as soon as the permission is granted, without a relaunch.
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] timer in
+                guard let self = self, Hotkeys.hasPermission, self.hotkeys.start() else { return }
+                Log.write("event tap started")
+                timer.invalidate()
+            }
+        }
 
         Log.write("started \(appVersion): " + settings.apps.map { "\($0.name) [\($0.enabled ? Shortcut.describe($0.shortcut) : "off")]" }.joined(separator: "; "))
         if firstRun { openSettings() }
