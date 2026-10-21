@@ -1,33 +1,38 @@
 # DictaMute
 
-Mute **only Microsoft Teams** while you dictate with [Wispr Flow](https://wisprflow.ai), so
-people in your call don't hear your dictation. Your system microphone is never touched, so
-Wispr keeps recording normally.
+Mute **only Microsoft Teams** while you talk to your dictation app — [Wispr Flow](https://wisprflow.ai),
+Claude's voice input, or anything else — so people in your call don't hear your dictation.
+Your microphone itself is never muted, so the dictation app keeps hearing you.
 
-A tiny Windows tray app: one ~20 KB exe, no installer, no dependencies.
+A tiny Windows tray app: one ~30 KB exe, no installer, no dependencies.
+
+![DictaMute settings](docs/screenshots/settings.png)
 
 ## How it works
 
-1. You press **mouse button 5** (the forward thumb button) to start Wispr dictation. The
-   click is passed straight through to Wispr — DictaMute only listens.
-2. As soon as Wispr's microphone stream becomes active, DictaMute presses Teams' own
-   **mic button** in your meeting (via Windows UI Automation — no fake keystrokes).
-3. When Wispr stops recording, it presses the button again to unmute you.
+1. You start dictating in your app as usual.
+2. As soon as that app's microphone stream becomes active, DictaMute presses Teams' own
+   **mic button** in your meeting (via Windows UI Automation — no fake keystrokes, so it never
+   interrupts your dictation app).
+3. When the app stops listening, DictaMute presses the button again to unmute you.
 
-It leaves Teams alone when:
+It leaves Teams alone when you're not in a call, you're already muted, you unmute yourself
+mid-dictation, or DictaMute is paused.
 
-- you're not in a Teams call,
-- you're already muted in Teams,
-- you unmute yourself manually mid-dictation,
-- Wispr doesn't actually start recording after the click.
+### Two ways an app can start muting Teams
 
-Works with Wispr's push-to-talk set to **press-and-hold** or **click (toggle)**.
+| Mode | Use it for | Example |
+|------|-----------|---------|
+| **Whenever this app starts using the microphone** | Apps that only open the mic while you're talking to them | Claude's voice input |
+| **When I press a shortcut and the app then starts listening** | Apps that also keep the mic open for other things | Wispr Flow (its meeting recorder holds the mic during calls) |
 
-## Requirements
+In shortcut mode, enter the **same shortcut you use in that app** — a key combo like `Ctrl+Win`
+or a middle/thumb mouse button. DictaMute only *listens* for it; the app still receives it.
+For Wispr Flow, **Use Wispr Flow's shortcut** reads it straight from Wispr's settings.
 
-- Windows 10/11, 64-bit (uses the built-in .NET Framework 4.x compiler)
-- The **new** Microsoft Teams, in **English** (it reads the "Mute mic" / "Unmute mic" button label)
-- Wispr Flow with its push-to-talk shortcut on **mouse button 5**
+| Shortcut mode (Wispr Flow) | Microphone mode (Claude) |
+|---|---|
+| ![Edit Wispr Flow](docs/screenshots/edit-app-shortcut.png) | ![Edit Claude](docs/screenshots/edit-app.png) |
 
 ## Download and run
 
@@ -35,15 +40,55 @@ Works with Wispr's push-to-talk set to **press-and-hold** or **click (toggle)**.
 2. Put it somewhere permanent (e.g. `Documents\DictaMute\`) and double-click it.
 3. Windows SmartScreen may say *"Windows protected your PC"* because the exe isn't code-signed.
    Click **More info → Run anyway**. (Prefer not to? Build it yourself — see below.)
-4. A microphone icon appears in the system tray. Right-click it and tick **Start with Windows**
-   so it runs every time you sign in.
+4. The settings window opens on first run. Check the apps you use, adjust their shortcuts, tick
+   **Start DictaMute with Windows**, and click **Save**.
 
-The icon shows the state at a glance: **grey** = not in a call, **blue** = watching your call,
-**red with a slash** = muting Teams while you dictate. The tray menu also has the current status (`Not in a call` / `In a call` / `Muted Teams for
-dictation`), **Open log**, and **Exit**.
+### The tray icon
 
-To remove: untick **Start with Windows**, choose **Exit**, and delete the exe (plus
-`%LOCALAPPDATA%\DictaMute`, which holds the log).
+<img src="docs/screenshots/tray-menu.png" alt="Tray menu" align="right">
+
+The microphone icon in the system tray shows the state at a glance:
+
+- **grey** — not in a call (or paused)
+- **blue** — in a call, watching your dictation apps
+- **red with a slash** — muting Teams right now
+
+Double-click it for settings. Right-click for **Pause**, **Start with Windows**, **Open log**,
+and **Exit**.
+
+<br clear="right">
+
+## Adding another dictation app
+
+**Settings → Add app…**, pick the app from the list (apps using the mic right now are listed
+first), and choose a mode. Not sure which mode? Open the app without dictating and check
+whether it shows up at the top of the list. If it does, it keeps the mic open — use shortcut mode.
+
+## Requirements
+
+- Windows 10/11, 64-bit
+- The **new** Microsoft Teams, in **English** (DictaMute reads the "Mute mic" / "Unmute mic" button label)
+
+## Privacy
+
+DictaMute runs entirely on your PC and never connects to the internet. To recognise your
+shortcuts it watches key and mouse-button presses system-wide, but it only compares them with
+your shortcuts — keystrokes are never stored, logged, or sent anywhere. The log
+(`%LOCALAPPDATA%\DictaMute\log.txt`) records app states and the title of the focused window
+when a shortcut fires, which can include meeting names.
+
+## Known limitations
+
+- **The very first moment of dictation can still reach the call.** Teams is muted once the app
+  has started listening (typically 0.1–0.5 s), not before — muting earlier interferes with the
+  dictation app's startup.
+- **Focus briefly flickers to Teams.** Pressing Teams' button moves focus to the meeting
+  window; DictaMute restores your previous window within ~80 ms.
+- **An app that's already holding the mic can't be detected starting dictation.** If Wispr
+  Flow's mic is already open when you press the shortcut, DictaMute leaves Teams alone (and
+  says so in the log).
+- Relies on Teams' internal button id (`microphone-button`) and English labels; a Teams update
+  or another UI language may need a code change.
 
 ## Build from source
 
@@ -57,32 +102,22 @@ install.cmd
 
 `install.cmd` builds the app, copies it to `%LOCALAPPDATA%\DictaMute`, turns on Start with
 Windows, and starts it. `uninstall.cmd` undoes all of that. `build.cmd` only builds (into `bin\`).
-
-## Known limitations
-
-- **The very first moment of dictation can still reach the call.** Teams is muted once Wispr
-  has started recording (typically 0.1–0.5 s after the click), not before — muting earlier
-  interferes with Wispr's startup.
-- **Focus briefly flickers to Teams.** Pressing Teams' button moves focus to the meeting
-  window; DictaMute restores your previous window within ~80 ms.
-- Relies on Teams' internal button id (`microphone-button`) and English labels; a Teams
-  update or another UI language may need a code change.
-- Only mouse button 5 arms it today. If your Wispr shortcut is on the keyboard, see
-  `OnPress` / `HookCallback` in `src/DictaMute.cs`.
+`bin\DictaMute.exe --screenshots docs\screenshots` regenerates the images in this README.
 
 ## Troubleshooting
 
-- Tray icon → **Open log** shows every step (`click: armed`, `Wispr recording -> muted Teams`,
-  `unmuted Teams`, focus restores).
-- `CaptureProbe.exe 30` (built with the source, or in `%LOCALAPPDATA%\DictaMute` after
-  `install.cmd`) prints which processes have an active microphone stream for 30 seconds —
-  useful to check that Wispr and Teams are detected.
+- Tray icon → **Open log** shows every step (`Wispr Flow: shortcut, armed`,
+  `Claude: started listening`, `muted Teams`, `unmuted Teams`, focus restores).
+- `CaptureProbe.exe 30` (built with the source) prints which apps have an active microphone
+  stream for 30 seconds — handy for choosing a mode for a new app.
 
 ## Files
 
 | File | What it is |
 |------|-----------|
-| `src/DictaMute.cs` | Tray app: mouse hook, state machine, Teams UI Automation, focus restore, autostart |
+| `src/DictaMute.cs` | Tray app, keyboard/mouse hooks, per-app state machine, Teams UI Automation, focus restore |
+| `src/Settings.cs` | Settings model (JSON), shortcut parsing, reading Wispr Flow's shortcut |
+| `src/SettingsForm.cs` | Settings window, app editor, shortcut recorder |
 | `src/Icons.cs` | Tray and app icons, drawn in code at each size |
 | `src/MakeIcon.cs` | Build-time helper that writes the exe's multi-size `.ico` |
 | `src/AudioCapture.cs` | Core Audio interop: which processes have an active mic stream |

@@ -1,13 +1,12 @@
-// DictaMute: mutes Microsoft Teams (only Teams, by pressing its own mic button) while
-// Wispr Flow is dictating, so call participants don't hear your dictation.
+// DictaMute: mutes Microsoft Teams (only Teams, by pressing its own mic button) while a
+// dictation app such as Wispr Flow or Claude is listening, so your call doesn't hear it.
 //
-// - Mouse button 5 (XButton2) arms it. The click is passed through untouched for Wispr.
-// - If you're in a Teams call and live, Teams' mic button is pressed via UI Automation
-//   (no keystrokes, so nothing interrupts Wispr and nothing beeps).
-// - It stays muted while Wispr's microphone stream is active, and unmutes when it stops.
-//   If Wispr never starts recording after the click, it unmutes after a moment.
-// - Works with Wispr in click (toggle) or press-and-hold mode.
-// - Not in a call, already muted, or you unmute yourself: it leaves Teams alone.
+// - Each watched app either starts on a shortcut (keys and/or middle/thumb mouse buttons,
+//   always passed through to the app) or whenever it opens the microphone.
+// - Once the app is actually listening, Teams' mic button is pressed via UI Automation
+//   (no keystrokes, so nothing interrupts the dictation app and nothing beeps).
+// - Teams is unmuted when the app's microphone stream goes idle.
+// - Not in a call, already muted, paused, or you unmute yourself: it leaves Teams alone.
 //
 // Build: build.cmd (or install.cmd) in the repository root.
 
@@ -17,6 +16,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -26,92 +26,170 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("DictaMute")]
 [assembly: System.Reflection.AssemblyProduct("DictaMute")]
-[assembly: System.Reflection.AssemblyDescription("Mutes only Microsoft Teams while Wispr Flow dictates")]
+[assembly: System.Reflection.AssemblyDescription("Mutes only Microsoft Teams while your dictation app is listening")]
 [assembly: System.Reflection.AssemblyCopyright("MIT License")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
 
 static class Program
 {
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+
+    public const string Version = "1.2.0";
+
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        SetProcessDPIAware(); // crisp tray icon and settings window on scaled displays
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
+        if (args.Length == 2 && args[0] == "--screenshots") { Screenshots.Capture(args[1]); return; }
+
         bool created;
         using (var mutex = new Mutex(true, "DictaMute.SingleInstance", out created))
         {
             if (!created) return;
-            Application.EnableVisualStyles();
             Application.Run(new DictaMuteApp());
         }
     }
 }
 
-class DictaMuteApp : ApplicationContext
+/// <summary>
+/// Low-level keyboard + mouse hooks. Input is only observed (and always passed on), except
+/// while a ShortcutBox is recording a new shortcut.
+/// </summary>
+static class Hooks
 {
-    const int WH_MOUSE_LL = 14;
-    const int WM_XBUTTONDOWN = 0x020B;
-    const int XBUTTON2 = 2; // "mouse button 5"
-
-    static readonly TimeSpan ArmTimeout = TimeSpan.FromMilliseconds(2500);  // click -> Wispr must start
-    static readonly TimeSpan StopDebounce = TimeSpan.FromMilliseconds(600); // Wispr idle this long = stopped
+    const int WH_KEYBOARD_LL = 13, WH_MOUSE_LL = 14;
+    const int WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105;
+    const int WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208, WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C;
 
     delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential)] struct KBDLLHOOKSTRUCT { public uint vkCode, scanCode, flags, time; public IntPtr extraInfo; }
+    [StructLayout(LayoutKind.Sequential)] struct MSLLHOOKSTRUCT { public int x, y; public uint mouseData, flags, time; public IntPtr extraInfo; }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, HookProc fn, IntPtr hMod, uint threadId);
+    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
 
-    [StructLayout(LayoutKind.Sequential)]
-    struct MSLLHOOKSTRUCT { public int x, y; public uint mouseData, flags, time; public IntPtr extraInfo; }
+    static HookProc keyboardProc, mouseProc; // kept alive for the hooks' lifetime
+    static IntPtr keyboardHook, mouseHook;
+    static readonly HashSet<int> down = new HashSet<int>();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern IntPtr SetWindowsHookEx(int idHook, HookProc fn, IntPtr hMod, uint threadId);
-    [DllImport("user32.dll")]
-    static extern bool UnhookWindowsHookEx(IntPtr hook);
-    [DllImport("user32.dll")]
-    static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr GetModuleHandle(string name);
+    /// <summary>Called with (virtual key, isDown) for every key/button event. Runs on the UI thread.</summary>
+    public static Action<int, bool> Observer;
+    /// <summary>Set by a ShortcutBox while recording; return true to swallow the input.</summary>
+    public static Func<int, bool, bool> Recorder;
 
-    enum State { Idle, Arming, Recording }
+    public static IEnumerable<int> Down { get { return down; } }
 
-    readonly string dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DictaMute");
-    string LogPath { get { return Path.Combine(dir, "log.txt"); } }
+    public static void Install()
+    {
+        keyboardProc = OnKeyboard;
+        mouseProc = OnMouse;
+        IntPtr module = GetModuleHandle(null);
+        keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, keyboardProc, module, 0);
+        mouseHook = SetWindowsHookEx(WH_MOUSE_LL, mouseProc, module, 0);
+    }
 
-    readonly HookProc hookProc;
-    readonly IntPtr hook;
+    public static void Uninstall()
+    {
+        if (keyboardHook != IntPtr.Zero) UnhookWindowsHookEx(keyboardHook);
+        if (mouseHook != IntPtr.Zero) UnhookWindowsHookEx(mouseHook);
+    }
+
+    static IntPtr OnKeyboard(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            int msg = wParam.ToInt32();
+            bool isDown = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            if (isDown || msg == WM_KEYUP || msg == WM_SYSKEYUP)
+            {
+                var data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                if (Handle(Shortcut.Canonical((int)data.vkCode), isDown)) return (IntPtr)1;
+            }
+        }
+        return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+    }
+
+    static IntPtr OnMouse(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            int msg = wParam.ToInt32();
+            int vk = 0; bool isDown = false;
+            if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) { vk = Shortcut.Mouse3; isDown = msg == WM_MBUTTONDOWN; }
+            else if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)
+            {
+                var data = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                vk = ((data.mouseData >> 16) & 0xFFFF) == 2 ? Shortcut.Mouse5 : Shortcut.Mouse4;
+                isDown = msg == WM_XBUTTONDOWN;
+            }
+            if (vk != 0 && Handle(vk, isDown)) return (IntPtr)1;
+        }
+        return CallNextHookEx(mouseHook, nCode, wParam, lParam);
+    }
+
+    static bool Handle(int vk, bool isDown)
+    {
+        var recorder = Recorder;
+        if (recorder != null) { down.Clear(); return recorder(vk, isDown); }
+        if (isDown) { if (!down.Add(vk)) return false; } // ignore key auto-repeat
+        else down.Remove(vk);
+        var observer = Observer;
+        if (observer != null) observer(vk, isDown);
+        return false;
+    }
+}
+
+class DictaMuteApp : ApplicationContext
+{
+    enum State { Idle, Arming, Listening }
+
+    /// <summary>Runtime state for one watched app.</summary>
+    class Watch
+    {
+        public AppRule Rule;
+        public List<HashSet<int>> Combos;
+        public State State = State.Idle;
+        public bool Active, WasActive;
+        public DateTime ArmDeadline, LastActive;
+    }
+
+    static readonly TimeSpan ArmTimeout = TimeSpan.FromMilliseconds(2500); // shortcut -> app must start listening
+
+    string LogPath { get { return Path.Combine(Settings.Dir, "log.txt"); } }
+
     readonly NotifyIcon tray;
-    readonly ToolStripMenuItem statusItem;
-    readonly BlockingCollection<DateTime> presses = new BlockingCollection<DateTime>();
+    readonly ContextMenuStrip menu;
+    readonly ToolStripMenuItem statusItem, pauseItem;
+    readonly Icon[] trayIcons = new Icon[3]; // Idle, InCall, Muting
+    readonly ConcurrentQueue<AppRule> arms = new ConcurrentQueue<AppRule>();
+    readonly AutoResetEvent wake = new AutoResetEvent(false);
+    readonly Thread worker;
+
+    volatile Settings settings;
+    volatile List<Watch> watches;  // rebuilt whenever settings change
+    volatile bool paused, stopping;
     volatile string status = "Starting";
     volatile int iconState = (int)IconState.Idle;
-    readonly Icon[] trayIcons = new Icon[3]; // Idle, InCall, Muting
-    volatile bool stopping;
-    readonly Thread worker;
+    SettingsForm settingsForm;
 
     public DictaMuteApp()
     {
-        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(Settings.Dir);
+        bool firstRun = !Settings.Exists;
+        settings = Settings.Load();
+        if (firstRun) settings.Save();
+        watches = BuildWatches(settings);
 
-        statusItem = new ToolStripMenuItem(status) { Enabled = false };
-        var menu = new ContextMenuStrip();
-        menu.Items.Add(statusItem);
-        menu.Items.Add(new ToolStripSeparator());
-        var autostart = new ToolStripMenuItem("Start with Windows") { Checked = Autostart.IsOn(), CheckOnClick = true };
-        autostart.CheckedChanged += delegate { Autostart.Set(autostart.Checked); };
-        menu.Items.Add(autostart);
-        menu.Items.Add("Open log", null, delegate { if (File.Exists(LogPath)) Process.Start("notepad.exe", "\"" + LogPath + "\""); });
-        menu.Items.Add("Exit", null, delegate { Shutdown(); });
+        menu = BuildMenu(this, out statusItem, out pauseItem);
         int iconSize = SystemInformation.SmallIconSize.Width; // 16 at 100% scaling, 32 at 200%
         for (int i = 0; i < trayIcons.Length; i++) trayIcons[i] = Icons.Tray((IconState)i, iconSize);
         tray = new NotifyIcon { Icon = trayIcons[0], Visible = true, ContextMenuStrip = menu, Text = "DictaMute" };
-
-        // First run (e.g. the exe was just downloaded): say where the app went.
-        string firstRunMarker = Path.Combine(dir, "first-run-done");
-        if (!File.Exists(firstRunMarker))
-        {
-            tray.ShowBalloonTip(8000, "DictaMute is running",
-                "It lives in the system tray. Right-click the microphone icon for \"Start with Windows\" and Exit.",
-                ToolTipIcon.Info);
-            try { File.WriteAllText(firstRunMarker, DateTime.Now.ToString("o")); } catch { }
-        }
+        tray.DoubleClick += delegate { OpenSettings(); };
 
         // Fast enough that the red "muting" icon appears with the mute.
         var uiTimer = new System.Windows.Forms.Timer { Interval = 150 };
@@ -126,34 +204,101 @@ class DictaMuteApp : ApplicationContext
         };
         uiTimer.Start();
 
-        hookProc = HookCallback;
-        hook = SetWindowsHookEx(WH_MOUSE_LL, hookProc, GetModuleHandle(null), 0);
-        if (hook == IntPtr.Zero) Log("SetWindowsHookEx failed: " + Marshal.GetLastWin32Error());
+        Hooks.Observer = OnInput;
+        Hooks.Install();
 
-        // All audio/UIA work happens off the UI thread so the mouse hook never waits on it.
+        // All audio/UIA work happens off the UI thread so the hooks never wait on it.
         worker = new Thread(WorkerLoop) { IsBackground = true, Name = "DictaMute worker" };
         worker.SetApartmentState(ApartmentState.MTA);
         worker.Start();
-        Log("started");
+        Log("started " + Program.Version + ": " + string.Join("; ", settings.Apps.Select(a => a.Name + " [" + (a.Enabled ? Shortcut.Describe(a.Shortcut) : "off") + "]")));
+
+        if (firstRun)
+        {
+            tray.ShowBalloonTip(8000, "DictaMute is running",
+                "It lives in the system tray. Double-click the microphone icon for settings.", ToolTipIcon.Info);
+            var once = new System.Windows.Forms.Timer { Interval = 1500 };
+            once.Tick += delegate { once.Stop(); OpenSettings(); };
+            once.Start();
+        }
     }
 
-    IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    /// <summary>The tray menu. With app == null it's inert (used for README screenshots).</summary>
+    public static ContextMenuStrip BuildMenu(DictaMuteApp app, out ToolStripMenuItem status, out ToolStripMenuItem pause)
     {
-        if (nCode >= 0 && wParam.ToInt32() == WM_XBUTTONDOWN)
+        var menu = new ContextMenuStrip { Font = Ui.Font };
+        status = new ToolStripMenuItem("Starting") { Enabled = false };
+        menu.Items.Add(status);
+        menu.Items.Add(new ToolStripSeparator());
+        var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(Ui.Font, FontStyle.Bold) };
+        menu.Items.Add(settingsItem);
+        pause = new ToolStripMenuItem("Pause") { CheckOnClick = true };
+        menu.Items.Add(pause);
+        var autostart = new ToolStripMenuItem("Start with Windows") { Checked = Autostart.IsOn(), CheckOnClick = true };
+        menu.Items.Add(autostart);
+        var log = new ToolStripMenuItem("Open log");
+        menu.Items.Add(log);
+        menu.Items.Add(new ToolStripSeparator());
+        var exit = new ToolStripMenuItem("Exit");
+        menu.Items.Add(exit);
+        if (app != null)
         {
-            var data = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-            if (((data.mouseData >> 16) & 0xFFFF) == XBUTTON2) presses.Add(DateTime.UtcNow);
+            var p = pause;
+            settingsItem.Click += delegate { app.OpenSettings(); };
+            pause.CheckedChanged += delegate { app.SetPaused(p.Checked); };
+            autostart.CheckedChanged += delegate { Autostart.Set(autostart.Checked); };
+            menu.Opening += delegate { autostart.Checked = Autostart.IsOn(); };
+            log.Click += delegate { if (File.Exists(app.LogPath)) Process.Start("notepad.exe", "\"" + app.LogPath + "\""); };
+            exit.Click += delegate { app.Shutdown(); };
         }
-        // Never swallow the click: Wispr Flow needs it.
-        return CallNextHookEx(hook, nCode, wParam, lParam);
+        return menu;
+    }
+
+    void OpenSettings()
+    {
+        if (settingsForm != null) { settingsForm.Activate(); return; }
+        using (settingsForm = new SettingsForm(settings, LogPath, Program.Version))
+        {
+            if (settingsForm.ShowDialog() == DialogResult.OK && settingsForm.Result != null)
+            {
+                settings = settingsForm.Result;
+                watches = BuildWatches(settings);
+                wake.Set();
+                Log("settings saved: " + string.Join("; ", settings.Apps.Select(a => a.Name + " [" + (a.Enabled ? Shortcut.Describe(a.Shortcut) : "off") + "]")));
+            }
+        }
+        settingsForm = null;
+    }
+
+    void SetPaused(bool value)
+    {
+        paused = value;
+        Log(value ? "paused" : "resumed");
+        wake.Set();
+    }
+
+    static List<Watch> BuildWatches(Settings s)
+    {
+        return s.Apps.Where(a => a.Enabled && a.Process.Length > 0)
+            .Select(a => new Watch { Rule = a, Combos = Shortcut.Parse(a.Shortcut) })
+            .ToList();
+    }
+
+    // UI thread (from the hooks): a key/button went down. If it completes an app's shortcut, arm it.
+    void OnInput(int vk, bool isDown)
+    {
+        if (!isDown) return;
+        var current = new HashSet<int>(Hooks.Down);
+        foreach (var w in watches)
+            foreach (var combo in w.Combos)
+                if (combo.Contains(vk) && combo.IsSubsetOf(current)) { arms.Enqueue(w.Rule); wake.Set(); break; }
     }
 
     // ---- worker ---------------------------------------------------------------------------
 
-    State state = State.Idle;
-    bool ownMute;              // we pressed Teams' button to mute and owe an unmute
-    bool muteConfirmed;        // Teams' button has since shown "Unmute" (its label lags the press)
-    DateTime armDeadline, lastWisprActive, pressedAt;
+    bool ownMute;       // we pressed Teams' button to mute and owe an unmute
+    bool muteConfirmed; // Teams' button has since shown "Unmute" (its label lags the press)
+    DateTime pressedAt;
     readonly Dictionary<uint, string> processNames = new Dictionary<uint, string>();
 
     void WorkerLoop()
@@ -162,73 +307,90 @@ class DictaMuteApp : ApplicationContext
         var lastTeamsScan = DateTime.MinValue;
         while (!stopping)
         {
-            DateTime press;
-            int clicks = presses.TryTake(out press, 100) ? 1 : 0; // ~10 Hz poll, wakes early on a click
+            wake.WaitOne(100); // ~10 Hz poll, wakes early on a shortcut
             try
             {
-                bool wisprActive = false, teamsCapturing = false;
+                var list = watches;
+
+                var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                bool inCall = false;
                 foreach (var pid in AudioCapture.ActivePids())
                 {
                     string name = ProcessName(pid);
-                    if (name.StartsWith("Wispr Flow", StringComparison.OrdinalIgnoreCase)) wisprActive = true;
-                    else if (name.Equals("ms-teams", StringComparison.OrdinalIgnoreCase)) teamsCapturing = true;
+                    if (name.Equals("ms-teams", StringComparison.OrdinalIgnoreCase)) inCall = true; // Teams holds the mic only in calls
+                    else if (name.Length > 0) active.Add(name);
                 }
+                foreach (var w in list) w.Active = active.Any(w.Rule.Matches);
 
-                // Teams only holds the mic open during a call; skip UIA scans outside calls.
-                if (!teamsCapturing) teams.Forget();
+                if (!inCall) teams.Forget();
                 else if (!teams.HasButton && DateTime.UtcNow - lastTeamsScan > TimeSpan.FromSeconds(3))
                 {
                     lastTeamsScan = DateTime.UtcNow;
                     teams.Find();
                 }
 
-                while (presses.TryTake(out press)) clicks++;
-                if (clicks > 0) OnPress(teams, wisprActive, teamsCapturing);
-                Tick(teams, wisprActive);
+                AppRule armed;
+                while (arms.TryDequeue(out armed)) OnArm(list, armed, inCall, teams);
+                Tick(list, inCall, teams);
 
-                status = !teamsCapturing ? "Not in a call"
-                       : state == State.Idle ? "In a call"
-                       : ownMute ? "Muted Teams for dictation" : "Dictating";
-                iconState = (int)(!teamsCapturing ? IconState.Idle : ownMute ? IconState.Muting : IconState.InCall);
+                var listening = list.FirstOrDefault(w => w.State == State.Listening);
+                status = paused ? "Paused"
+                       : !inCall ? "Not in a call"
+                       : ownMute && listening != null ? "Muted Teams for " + listening.Rule.Name
+                       : "In a call";
+                iconState = (int)(paused || !inCall ? IconState.Idle : ownMute ? IconState.Muting : IconState.InCall);
             }
             catch (Exception ex) { Log("worker error: " + ex.Message); }
         }
     }
 
-    // The click only arms. Teams is muted once Wispr has actually started recording, so
-    // nothing touches Teams while Wispr is still starting up its dictation.
-    void OnPress(TeamsMic teams, bool wisprActive, bool inCall)
+    // A shortcut only arms the app. Teams is muted once the app is actually listening, so
+    // nothing touches Teams while the app is still starting up its dictation.
+    void OnArm(List<Watch> list, AppRule rule, bool inCall, TeamsMic teams)
     {
-        if (state != State.Idle) return; // the stop click (or hold release) is seen via Wispr going idle
-        if (!inCall) return;
-        if (wisprActive) { Log("click: Wispr already using the mic, leaving Teams alone"); return; }
-        if (!teams.HasButton) teams.Find();
-        bool? muted = teams.IsMuted();
-        if (muted != false) { Log("click: Teams " + (muted == true ? "already muted" : "mic button not found")); return; }
-        Log("click: armed (focus: " + Focus.Describe(Focus.Current()) + ")");
-        state = State.Arming;
-        armDeadline = DateTime.UtcNow + ArmTimeout;
+        var w = list.FirstOrDefault(x => x.Rule == rule);
+        if (w == null || w.State != State.Idle || paused || !inCall) return; // a stop press is seen via the mic going idle
+        if (w.Active) { Log(rule.Name + ": shortcut, but it's already using the mic; leaving Teams alone"); return; }
+        Log(rule.Name + ": shortcut, armed (focus: " + Focus.Describe(Focus.Current()) + ")");
+        w.State = State.Arming;
+        w.ArmDeadline = DateTime.UtcNow + ArmTimeout;
     }
 
-    void Tick(TeamsMic teams, bool wisprActive)
+    void Tick(List<Watch> list, bool inCall, TeamsMic teams)
     {
         var now = DateTime.UtcNow;
-        if (wisprActive) lastWisprActive = now;
-        switch (state)
+        var delay = TimeSpan.FromMilliseconds(settings.UnmuteDelayMs);
+        bool anyWasListening = list.Any(w => w.State == State.Listening);
+
+        foreach (var w in list)
         {
-            case State.Arming:
-                if (wisprActive)
-                {
-                    state = State.Recording;
-                    if (teams.IsMuted() == false) PressTeams(teams, "Wispr recording -> muted Teams", true);
-                    else Log("Wispr recording, Teams already muted");
-                }
-                else if (now > armDeadline) { Log("Wispr didn't start"); state = State.Idle; }
-                break;
-            case State.Recording:
-                if (!wisprActive && now - lastWisprActive > StopDebounce) { Log("Wispr stopped"); Restore(teams); }
-                break;
+            if (w.Active) w.LastActive = now;
+            if (!inCall || paused) w.State = State.Idle;
+            else switch (w.State)
+            {
+                case State.Idle:
+                    // "Whenever it uses the mic" apps start on the idle -> active edge.
+                    if (w.Combos.Count == 0 && w.Active && !w.WasActive) { w.State = State.Listening; Log(w.Rule.Name + ": started listening"); }
+                    break;
+                case State.Arming:
+                    if (w.Active) { w.State = State.Listening; Log(w.Rule.Name + ": started listening"); }
+                    else if (now > w.ArmDeadline) { w.State = State.Idle; Log(w.Rule.Name + ": didn't start listening"); }
+                    break;
+                case State.Listening:
+                    if (!w.Active && now - w.LastActive > delay) { w.State = State.Idle; Log(w.Rule.Name + ": stopped listening"); }
+                    break;
+            }
+            w.WasActive = w.Active;
         }
+
+        bool anyListening = list.Any(w => w.State == State.Listening);
+        if (anyListening && !anyWasListening)
+        {
+            if (teams.IsMuted() == false) PressTeams(teams, "muted Teams", true);
+            else Log("Teams already muted");
+        }
+        else if (!anyListening && anyWasListening) Restore(teams);
+        else if (!inCall) ownMute = false;
 
         if (!ownMute) return;
         bool? muted = teams.IsMuted();
@@ -243,7 +405,6 @@ class DictaMuteApp : ApplicationContext
 
     void Restore(TeamsMic teams)
     {
-        state = State.Idle;
         if (!ownMute) return;
         // Our mute may not show yet (very short dictation): give Teams a moment to catch up.
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -262,7 +423,7 @@ class DictaMuteApp : ApplicationContext
         if (!teams.Press()) return;
         if (muting) { ownMute = true; muteConfirmed = false; pressedAt = DateTime.UtcNow; }
         Log(what);
-        // Pressing a Teams button must not pull focus away from where Wispr is typing.
+        // Pressing a Teams button must not pull focus away from where you're dictating.
         for (int i = 0; i < 6; i++)
         {
             Thread.Sleep(40);
@@ -305,6 +466,7 @@ class DictaMuteApp : ApplicationContext
     void Shutdown()
     {
         stopping = true;
+        wake.Set();
         worker.Join(2000);
         if (ownMute)
         {
@@ -312,10 +474,80 @@ class DictaMuteApp : ApplicationContext
             teams.Find();
             if (teams.IsMuted() == true) teams.Press();
         }
-        if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
+        Hooks.Uninstall();
         tray.Visible = false;
         tray.Dispose();
         ExitThread();
+    }
+}
+
+/// <summary>DictaMute.exe --screenshots &lt;dir&gt;: renders the README images from the real UI.</summary>
+static class Screenshots
+{
+    public static void Capture(string dir)
+    {
+        Directory.CreateDirectory(dir);
+        var demo = new Settings();
+        demo.Apps.Add(new AppRule { Name = "Wispr Flow", Process = "Wispr Flow", Shortcut = "Mouse5" });
+        demo.Apps.Add(new AppRule { Name = "Claude", Process = "claude", Shortcut = "" });
+
+        using (var form = new SettingsForm(demo, "", Program.Version) { StartPosition = FormStartPosition.Manual, Location = new Point(80, 80), TopMost = true })
+        {
+            form.Show();
+            form.SelectFirst();
+            Grab(form, Path.Combine(dir, "settings.png"));
+            using (var dlg = new AppDialog(demo.Apps[1]) { StartPosition = FormStartPosition.Manual, Location = new Point(80, 80), TopMost = true })
+            {
+                dlg.Show();
+                Grab(dlg, Path.Combine(dir, "edit-app.png"));
+            }
+            using (var dlg = new AppDialog(demo.Apps[0]) { StartPosition = FormStartPosition.Manual, Location = new Point(80, 80), TopMost = true })
+            {
+                dlg.Show();
+                Grab(dlg, Path.Combine(dir, "edit-app-shortcut.png"));
+            }
+        }
+
+        ToolStripMenuItem status, pause;
+        using (var menu = DictaMuteApp.BuildMenu(null, out status, out pause))
+        {
+            status.Text = "Muted Teams for Wispr Flow";
+            menu.Show(new Point(80, 80));
+            Pump(300);
+            using (var bmp = new Bitmap(menu.Width, menu.Height))
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(menu.Bounds.Location, Point.Empty, menu.Size);
+                bmp.Save(Path.Combine(dir, "tray-menu.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+            menu.Close();
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT value, int size);
+
+    static void Grab(Form form, string path)
+    {
+        form.Activate();
+        Pump(400);
+        // The visible frame, without Windows 10/11's invisible resize borders.
+        RECT f;
+        var r = DwmGetWindowAttribute(form.Handle, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out f, Marshal.SizeOf(typeof(RECT))) == 0
+            ? Rectangle.FromLTRB(f.Left, f.Top, f.Right, f.Bottom)
+            : form.Bounds;
+        using (var bmp = new Bitmap(r.Width, r.Height))
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+            bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+        }
+    }
+
+    static void Pump(int ms)
+    {
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        while (DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(15); }
     }
 }
 
