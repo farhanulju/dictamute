@@ -53,6 +53,7 @@ class SettingsForm : Form
     readonly ListView list;
     readonly NumericUpDown delay;
     readonly CheckBox autostart;
+    readonly List<CheckBox> callBoxes = new List<CheckBox>();
     public Settings Result { get; private set; }
 
     public SettingsForm(Settings current, string logPath, string version)
@@ -68,10 +69,10 @@ class SettingsForm : Form
         Icon = Icons.Tray(IconState.App, 32);
 
         var col = Ui.Column();
-        col.Controls.Add(Ui.Text("Mute Teams while these apps are listening", Ui.Heading));
+        col.Controls.Add(Ui.Text("Mute your call while these apps are listening", Ui.Heading));
         col.Controls.Add(Ui.Text(
-            "During a Teams call, DictaMute mutes your Teams mic while one of these apps is taking " +
-            "dictation, then unmutes it when the app stops. Your microphone itself is never muted.", null, Ui.Muted));
+            "During a Teams or Discord call, DictaMute mutes you in the call while one of these apps is " +
+            "taking dictation, then unmutes you when the app stops. Your microphone itself is never muted.", null, Ui.Muted));
 
         list = new ListView
         {
@@ -79,7 +80,7 @@ class SettingsForm : Form
             HeaderStyle = ColumnHeaderStyle.Nonclickable, Size = new Size(520, 140), Margin = new Padding(0, 4, 0, 8),
         };
         list.Columns.Add("App", 150);
-        list.Columns.Add("Starts muting Teams", 345);
+        list.Columns.Add("Starts muting the call", 345);
         list.DoubleClick += delegate { EditSelected(); };
         list.ItemChecked += delegate(object s, ItemCheckedEventArgs e) { ((AppRule)e.Item.Tag).Enabled = e.Item.Checked; };
         col.Controls.Add(list);
@@ -90,8 +91,18 @@ class SettingsForm : Form
             Ui.Button("Remove", delegate { RemoveSelected(); })));
 
         col.Controls.Add(Ui.Text("Options", Ui.Heading));
+        var callsLabel = Ui.Text("Mute me in");
+        callsLabel.Margin = new Padding(0, 4, 6, 0);
+        var callsRow = Ui.Row(callsLabel);
+        foreach (var known in CallMic.Known)
+        {
+            var box = new CheckBox { Text = known.Value, Tag = known.Key, AutoSize = true, Checked = working.Mutes(known.Key), Margin = new Padding(0, 3, 12, 0) };
+            callBoxes.Add(box);
+            callsRow.Controls.Add(box);
+        }
+        col.Controls.Add(callsRow);
         delay = new NumericUpDown { Minimum = 100, Maximum = 10000, Increment = 100, Value = working.UnmuteDelayMs, Width = 70, Margin = new Padding(0, 0, 6, 0) };
-        var delayRow = Ui.Row(Ui.Text("Unmute Teams"), delay, Ui.Text("ms after the app stops listening"));
+        var delayRow = Ui.Row(Ui.Text("Unmute the call"), delay, Ui.Text("ms after the app stops listening"));
         foreach (Control c in delayRow.Controls) if (c is Label) c.Margin = new Padding(0, 4, 6, 0);
         col.Controls.Add(delayRow);
         autostart = new CheckBox { Text = "Start DictaMute with Windows", AutoSize = true, Checked = Autostart.IsOn(), Margin = new Padding(0, 0, 0, 12) };
@@ -153,6 +164,7 @@ class SettingsForm : Form
     void SaveAndClose()
     {
         working.UnmuteDelayMs = (int)delay.Value;
+        working.CallApps = callBoxes.Where(b => b.Checked).Select(b => (string)b.Tag).ToList();
         if (autostart.Checked != Autostart.IsOn()) Autostart.Set(autostart.Checked);
         working.Save();
         Result = working;
@@ -195,7 +207,7 @@ class AppDialog : Form
         col.Controls.Add(Labeled("Process", process, "The program's name, without .exe. Apps using the mic right now are listed first."));
         col.Controls.Add(Labeled("Display name", name, null));
 
-        col.Controls.Add(Ui.Text("When should Teams be muted?", Ui.Heading));
+        col.Controls.Add(Ui.Text("When should your call be muted?", Ui.Heading));
         whenever = new RadioButton { Text = "Whenever this app starts using the microphone", AutoSize = true, Margin = new Padding(0, 0, 0, 0) };
         col.Controls.Add(whenever);
         col.Controls.Add(Indent(Ui.Text("Best for apps that only open the mic while you talk to them, like Claude.", null, Ui.Muted)));

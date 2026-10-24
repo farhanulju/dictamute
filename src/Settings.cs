@@ -32,9 +32,16 @@ class AppRule
 class Settings
 {
     public List<AppRule> Apps { get; set; }
-    public int UnmuteDelayMs { get; set; }  // how long an app's mic must be idle before Teams is unmuted
+    public int UnmuteDelayMs { get; set; }  // how long an app's mic must be idle before the call is unmuted
+    /// <summary>Call apps to mute, by CallMic.Name ("Teams", "Discord"). null = all of them.</summary>
+    public List<string> CallApps { get; set; }
 
     public Settings() { Apps = new List<AppRule>(); UnmuteDelayMs = 600; }
+
+    public bool Mutes(string callApp)
+    {
+        return CallApps == null || CallApps.Contains(callApp, StringComparer.OrdinalIgnoreCase);
+    }
 
     public static string Dir
     {
@@ -70,7 +77,12 @@ class Settings
 
     public Settings Clone()
     {
-        return new Settings { Apps = Apps.Select(a => a.Clone()).ToList(), UnmuteDelayMs = UnmuteDelayMs };
+        return new Settings
+        {
+            Apps = Apps.Select(a => a.Clone()).ToList(),
+            UnmuteDelayMs = UnmuteDelayMs,
+            CallApps = CallApps == null ? null : new List<string>(CallApps),
+        };
     }
 
     public static Settings Defaults()

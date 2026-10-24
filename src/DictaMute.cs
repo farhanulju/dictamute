@@ -1,12 +1,13 @@
-// DictaMute: mutes Microsoft Teams (only Teams, by pressing its own mic button) while a
-// dictation app such as Wispr Flow or Claude is listening, so your call doesn't hear it.
+// DictaMute: mutes your call app (Microsoft Teams or Discord; only the call app, by pressing its
+// own mic button) while a dictation app such as Wispr Flow or Claude is listening, so your call
+// doesn't hear it.
 //
 // - Each watched app either starts on a shortcut (keys and/or middle/thumb mouse buttons,
 //   always passed through to the app) or whenever it opens the microphone.
-// - Once the app is actually listening, Teams' mic button is pressed via UI Automation
-//   (no keystrokes, so nothing interrupts the dictation app and nothing beeps).
-// - Teams is unmuted when the app's microphone stream goes idle.
-// - Not in a call, already muted, paused, or you unmute yourself: it leaves Teams alone.
+// - Once the app is actually listening, the call app's mic button is pressed via UI Automation
+//   (no keystrokes, so nothing interrupts the dictation app and nothing beeps). See CallApps.cs.
+// - The call is unmuted when the dictation app's microphone stream goes idle.
+// - Not in a call, already muted, paused, or you unmute yourself: it leaves the call alone.
 //
 // Build: build.cmd (or install.cmd) in the repository root.
 
@@ -26,16 +27,16 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("DictaMute")]
 [assembly: System.Reflection.AssemblyProduct("DictaMute")]
-[assembly: System.Reflection.AssemblyDescription("Mutes only Microsoft Teams while your dictation app is listening")]
+[assembly: System.Reflection.AssemblyDescription("Mutes only your Teams or Discord call while your dictation app is listening")]
 [assembly: System.Reflection.AssemblyCopyright("MIT License")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 
 static class Program
 {
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
-    public const string Version = "1.2.0";
+    public const string Version = "1.3.0";
 
     [STAThread]
     static void Main(string[] args)
@@ -208,6 +209,7 @@ class DictaMuteApp : ApplicationContext
         Hooks.Install();
 
         // All audio/UIA work happens off the UI thread so the hooks never wait on it.
+        calls = CallMic.All(Log);
         worker = new Thread(WorkerLoop) { IsBackground = true, Name = "DictaMute worker" };
         worker.SetApartmentState(ApartmentState.MTA);
         worker.Start();
@@ -296,67 +298,74 @@ class DictaMuteApp : ApplicationContext
 
     // ---- worker ---------------------------------------------------------------------------
 
-    bool ownMute;       // we pressed Teams' button to mute and owe an unmute
-    bool muteConfirmed; // Teams' button has since shown "Unmute" (its label lags the press)
-    DateTime pressedAt;
+    readonly List<CallMic> calls;   // Teams, Discord; their tracking state belongs to the worker thread
     readonly Dictionary<uint, string> processNames = new Dictionary<uint, string>();
+
+    IEnumerable<CallMic> EnabledCalls(Settings s)
+    {
+        return calls.Where(c => s.Mutes(c.Name));
+    }
 
     void WorkerLoop()
     {
-        var teams = new TeamsMic(Log);
-        var lastTeamsScan = DateTime.MinValue;
         while (!stopping)
         {
             wake.WaitOne(100); // ~10 Hz poll, wakes early on a shortcut
             try
             {
                 var list = watches;
+                var s = settings;
 
                 var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                bool inCall = false;
                 foreach (var pid in AudioCapture.ActivePids())
                 {
                     string name = ProcessName(pid);
-                    if (name.Equals("ms-teams", StringComparison.OrdinalIgnoreCase)) inCall = true; // Teams holds the mic only in calls
-                    else if (name.Length > 0) active.Add(name);
+                    if (name.Length > 0) active.Add(name);
                 }
+                // Call apps hold the mic only during a call, so "has the mic open" = "in a call".
+                var enabled = EnabledCalls(s).ToList();
+                foreach (var c in calls)
+                {
+                    c.InCall = enabled.Contains(c) && active.Contains(c.Process);
+                    if (!c.InCall) { c.Forget(); c.OwnMute = false; }
+                    else if (!c.HasButton && DateTime.UtcNow - c.LastScan > TimeSpan.FromSeconds(3))
+                    {
+                        c.LastScan = DateTime.UtcNow;
+                        c.Find();
+                    }
+                }
+                bool inCall = calls.Any(c => c.InCall);
                 foreach (var w in list) w.Active = active.Any(w.Rule.Matches);
 
-                if (!inCall) teams.Forget();
-                else if (!teams.HasButton && DateTime.UtcNow - lastTeamsScan > TimeSpan.FromSeconds(3))
-                {
-                    lastTeamsScan = DateTime.UtcNow;
-                    teams.Find();
-                }
-
                 AppRule armed;
-                while (arms.TryDequeue(out armed)) OnArm(list, armed, inCall, teams);
-                Tick(list, inCall, teams);
+                while (arms.TryDequeue(out armed)) OnArm(list, armed, inCall);
+                Tick(list, inCall);
 
                 var listening = list.FirstOrDefault(w => w.State == State.Listening);
+                var muted = calls.Where(c => c.OwnMute).Select(c => c.Name).ToList();
                 status = paused ? "Paused"
                        : !inCall ? "Not in a call"
-                       : ownMute && listening != null ? "Muted Teams for " + listening.Rule.Name
-                       : "In a call";
-                iconState = (int)(paused || !inCall ? IconState.Idle : ownMute ? IconState.Muting : IconState.InCall);
+                       : muted.Count > 0 && listening != null ? "Muted " + string.Join(" + ", muted) + " for " + listening.Rule.Name
+                       : "In a " + string.Join(" + ", calls.Where(c => c.InCall).Select(c => c.Name)) + " call";
+                iconState = (int)(paused || !inCall ? IconState.Idle : muted.Count > 0 ? IconState.Muting : IconState.InCall);
             }
             catch (Exception ex) { Log("worker error: " + ex.Message); }
         }
     }
 
-    // A shortcut only arms the app. Teams is muted once the app is actually listening, so
-    // nothing touches Teams while the app is still starting up its dictation.
-    void OnArm(List<Watch> list, AppRule rule, bool inCall, TeamsMic teams)
+    // A shortcut only arms the app. Calls are muted once the app is actually listening, so
+    // nothing touches the call while the app is still starting up its dictation.
+    void OnArm(List<Watch> list, AppRule rule, bool inCall)
     {
         var w = list.FirstOrDefault(x => x.Rule == rule);
         if (w == null || w.State != State.Idle || paused || !inCall) return; // a stop press is seen via the mic going idle
-        if (w.Active) { Log(rule.Name + ": shortcut, but it's already using the mic; leaving Teams alone"); return; }
+        if (w.Active) { Log(rule.Name + ": shortcut, but it's already using the mic; leaving the call alone"); return; }
         Log(rule.Name + ": shortcut, armed (focus: " + Focus.Describe(Focus.Current()) + ")");
         w.State = State.Arming;
         w.ArmDeadline = DateTime.UtcNow + ArmTimeout;
     }
 
-    void Tick(List<Watch> list, bool inCall, TeamsMic teams)
+    void Tick(List<Watch> list, bool inCall)
     {
         var now = DateTime.UtcNow;
         var delay = TimeSpan.FromMilliseconds(settings.UnmuteDelayMs);
@@ -384,46 +393,48 @@ class DictaMuteApp : ApplicationContext
         }
 
         bool anyListening = list.Any(w => w.State == State.Listening);
-        if (anyListening && !anyWasListening)
+        foreach (var c in calls.Where(c => c.InCall))
         {
-            if (teams.IsMuted() == false) PressTeams(teams, "muted Teams", true);
-            else Log("Teams already muted");
-        }
-        else if (!anyListening && anyWasListening) Restore(teams);
-        else if (!inCall) ownMute = false;
+            if (anyListening && !anyWasListening)
+            {
+                if (c.IsMuted() == false) Press(c, "muted " + c.Name, true);
+                else Log(c.Name + " already muted");
+            }
+            else if (!anyListening && anyWasListening) Restore(c);
 
-        if (!ownMute) return;
-        bool? muted = teams.IsMuted();
-        if (!muteConfirmed)
-        {
-            if (muted == true) muteConfirmed = true;
-            else if (now - pressedAt > TimeSpan.FromSeconds(3)) { ownMute = false; Log("Teams never showed muted; not tracking"); }
+            if (!c.OwnMute) continue;
+            bool? muted = c.IsMuted();
+            if (!c.MuteConfirmed)
+            {
+                if (muted == true) c.MuteConfirmed = true;
+                else if (now - c.PressedAt > TimeSpan.FromSeconds(3)) { c.OwnMute = false; Log(c.Name + " never showed muted; not tracking"); }
+            }
+            // You unmuted yourself mid-dictation: don't fight it, and don't "restore" later.
+            else if (muted == false) { c.OwnMute = false; Log("you unmuted " + c.Name + " manually"); }
         }
-        // You unmuted yourself mid-dictation: don't fight it, and don't "restore" later.
-        else if (muted == false) { ownMute = false; Log("you unmuted manually"); }
     }
 
-    void Restore(TeamsMic teams)
+    void Restore(CallMic c)
     {
-        if (!ownMute) return;
-        // Our mute may not show yet (very short dictation): give Teams a moment to catch up.
+        if (!c.OwnMute) return;
+        // Our mute may not show yet (very short dictation): give the app a moment to catch up.
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-        while (!muteConfirmed && DateTime.UtcNow < until)
+        while (!c.MuteConfirmed && DateTime.UtcNow < until)
         {
-            if (teams.IsMuted() == true) muteConfirmed = true; else Thread.Sleep(50);
+            if (c.IsMuted() == true) c.MuteConfirmed = true; else Thread.Sleep(50);
         }
-        if (teams.IsMuted() == true) PressTeams(teams, "unmuted Teams", false);
-        else Log("Teams already live, nothing to undo");
-        ownMute = false;
+        if (c.IsMuted() == true) Press(c, "unmuted " + c.Name, false);
+        else Log(c.Name + " already live, nothing to undo");
+        c.OwnMute = false;
     }
 
-    void PressTeams(TeamsMic teams, string what, bool muting)
+    void Press(CallMic c, string what, bool muting)
     {
         IntPtr before = Focus.Current();
-        if (!teams.Press()) return;
-        if (muting) { ownMute = true; muteConfirmed = false; pressedAt = DateTime.UtcNow; }
+        if (!c.Press()) return;
+        if (muting) { c.OwnMute = true; c.MuteConfirmed = false; c.PressedAt = DateTime.UtcNow; }
         Log(what);
-        // Pressing a Teams button must not pull focus away from where you're dictating.
+        // Pressing a call app's button must not pull focus away from where you're dictating.
         for (int i = 0; i < 6; i++)
         {
             Thread.Sleep(40);
@@ -468,12 +479,8 @@ class DictaMuteApp : ApplicationContext
         stopping = true;
         wake.Set();
         worker.Join(2000);
-        if (ownMute)
-        {
-            var teams = new TeamsMic(Log);
-            teams.Find();
-            if (teams.IsMuted() == true) teams.Press();
-        }
+        foreach (var c in calls.Where(c => c.OwnMute))
+            if (c.IsMuted() == true) c.Press(); // don't leave a call muted on Exit
         Hooks.Uninstall();
         tray.Visible = false;
         tray.Dispose();
@@ -612,79 +619,3 @@ static class Focus
     }
 }
 
-/// <summary>Teams' in-call mic button, found and pressed through UI Automation.</summary>
-class TeamsMic
-{
-    delegate bool EnumProc(IntPtr h, IntPtr l);
-    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-
-    static readonly Condition MicCondition =
-        new PropertyCondition(AutomationElement.AutomationIdProperty, "microphone-button");
-
-    readonly Action<string> log;
-    AutomationElement button;
-
-    public TeamsMic(Action<string> log) { this.log = log; }
-
-    public bool HasButton { get { return button != null; } }
-    public void Forget() { button = null; }
-
-    public void Find()
-    {
-        button = null;
-        var pids = new HashSet<uint>();
-        foreach (var p in Process.GetProcessesByName("ms-teams")) pids.Add((uint)p.Id);
-        var windows = new List<IntPtr>();
-        EnumWindows((h, l) =>
-        {
-            uint pid; GetWindowThreadProcessId(h, out pid);
-            if (pids.Contains(pid) && IsWindowVisible(h))
-            {
-                var c = new StringBuilder(64); GetClassName(h, c, 64);
-                if (c.ToString() == "TeamsWebView") windows.Add(h);
-            }
-            return true;
-        }, IntPtr.Zero);
-        foreach (var h in windows)
-        {
-            try
-            {
-                var el = AutomationElement.FromHandle(h).FindFirst(TreeScope.Descendants, MicCondition);
-                if (el != null) { button = el; return; }
-            }
-            catch (Exception) { }
-        }
-    }
-
-    /// <summary>true = muted, false = live, null = no call / button not found.</summary>
-    public bool? IsMuted()
-    {
-        for (int attempt = 0; attempt < 2; attempt++)
-        {
-            if (button == null) { if (attempt == 0) Find(); continue; }
-            try
-            {
-                string name = button.Current.Name ?? "";
-                if (name.StartsWith("Unmute", StringComparison.OrdinalIgnoreCase)) return true;
-                if (name.StartsWith("Mute", StringComparison.OrdinalIgnoreCase)) return false;
-                log("unrecognised mic button name: '" + name + "'");
-                return null;
-            }
-            catch (ElementNotAvailableException) { Find(); }
-        }
-        return null;
-    }
-
-    public bool Press()
-    {
-        try
-        {
-            ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
-            return true;
-        }
-        catch (Exception ex) { log("pressing the Teams mic button failed: " + ex.Message); return false; }
-    }
-}

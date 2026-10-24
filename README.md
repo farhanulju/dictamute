@@ -1,8 +1,8 @@
 # DictaMute
 
-Mute **only Microsoft Teams** while you talk to your dictation app — [Wispr Flow](https://wisprflow.ai),
-Claude's voice input, or anything else — so people in your call don't hear your dictation.
-Your microphone itself is never muted, so the dictation app keeps hearing you.
+Mute **only your call** — Microsoft Teams or Discord — while you talk to your dictation app —
+[Wispr Flow](https://wisprflow.ai), Claude's voice input, or anything else — so people in the call
+don't hear your dictation. Your microphone itself is never muted, so the dictation app keeps hearing you.
 
 A tiny Windows tray app: one ~30 KB exe, no installer, no dependencies. There's also an
 [experimental macOS build](#macos-experimental-untested).
@@ -12,15 +12,15 @@ A tiny Windows tray app: one ~30 KB exe, no installer, no dependencies. There's 
 ## How it works
 
 1. You start dictating in your app as usual.
-2. As soon as that app's microphone stream becomes active, DictaMute presses Teams' own
-   **mic button** in your meeting (via Windows UI Automation — no fake keystrokes, so it never
-   interrupts your dictation app).
+2. As soon as that app's microphone stream becomes active, DictaMute presses the call app's own
+   **mute button** — the mic button in your Teams meeting, or **Mute** in Discord's user panel —
+   via Windows UI Automation. No fake keystrokes, so it never interrupts your dictation app.
 3. When the app stops listening, DictaMute presses the button again to unmute you.
 
-It leaves Teams alone when you're not in a call, you're already muted, you unmute yourself
-mid-dictation, or DictaMute is paused.
+It leaves the call alone when you're not in one, you're already muted, you unmute yourself
+mid-dictation, or DictaMute is paused. Choose which call apps it mutes under **Settings → Options**.
 
-### Two ways an app can start muting Teams
+### Two ways an app can start muting the call
 
 | Mode | Use it for | Example |
 |------|-----------|---------|
@@ -52,7 +52,7 @@ The microphone icon in the system tray shows the state at a glance:
 
 - **grey** — not in a call (or paused)
 - **blue** — in a call, watching your dictation apps
-- **red with a slash** — muting Teams right now
+- **red with a slash** — muting your call right now
 
 Double-click it for settings. Right-click for **Pause**, **Start with Windows**, **Open log**,
 and **Exit**.
@@ -68,7 +68,9 @@ whether it shows up at the top of the list. If it does, it keeps the mic open �
 ## Requirements
 
 - Windows 10/11, 64-bit
-- The **new** Microsoft Teams, in **English** (DictaMute reads the "Mute mic" / "Unmute mic" button label)
+- A call app in **English** (DictaMute reads button labels):
+  - the **new** Microsoft Teams ("Mute mic" / "Unmute mic"), and/or
+  - the Discord desktop app ("Mute" in the user panel). Discord in a browser isn't supported.
 
 ## Privacy
 
@@ -80,16 +82,19 @@ when a shortcut fires, which can include meeting names.
 
 ## Known limitations
 
-- **The very first moment of dictation can still reach the call.** Teams is muted once the app
-  has started listening (typically 0.1–0.5 s), not before — muting earlier interferes with the
+- **The very first moment of dictation can still reach the call.** The call is muted once the
+  app has started listening (typically 0.1–0.5 s), not before — muting earlier interferes with the
   dictation app's startup.
-- **Focus briefly flickers to Teams.** Pressing Teams' button moves focus to the meeting
-  window; DictaMute restores your previous window within ~80 ms.
+- **Focus can briefly flicker to the call app.** If pressing its button moves focus to the
+  meeting window, DictaMute restores your previous window within ~80 ms.
 - **An app that's already holding the mic can't be detected starting dictation.** If Wispr
-  Flow's mic is already open when you press the shortcut, DictaMute leaves Teams alone (and
+  Flow's mic is already open when you press the shortcut, DictaMute leaves the call alone (and
   says so in the log).
-- Relies on Teams' internal button id (`microphone-button`) and English labels; a Teams update
-  or another UI language may need a code change.
+- **"In a call" means the call app has the microphone open.** Teams and Discord only do that
+  during a call (or Discord's mic test in its settings).
+- Relies on each app's button id or English labels (Teams: `microphone-button`; Discord: the
+  "Mute" switch); an app update or another UI language may need a code change. Google Meet and
+  other browser calls aren't supported yet.
 
 ## macOS (experimental, untested)
 
@@ -148,7 +153,7 @@ Windows, and starts it. `uninstall.cmd` undoes all of that. `build.cmd` only bui
 ## Troubleshooting
 
 - Tray icon → **Open log** shows every step (`Wispr Flow: shortcut, armed`,
-  `Claude: started listening`, `muted Teams`, `unmuted Teams`, focus restores).
+  `Claude: started listening`, `muted Discord`, `unmuted Discord`, focus restores).
 - `CaptureProbe.exe 30` (built with the source) prints which apps have an active microphone
   stream for 30 seconds — handy for choosing a mode for a new app.
 
@@ -156,7 +161,8 @@ Windows, and starts it. `uninstall.cmd` undoes all of that. `build.cmd` only bui
 
 | File | What it is |
 |------|-----------|
-| `src/DictaMute.cs` | Tray app, keyboard/mouse hooks, per-app state machine, Teams UI Automation, focus restore |
+| `src/DictaMute.cs` | Tray app, keyboard/mouse hooks, per-app state machine, focus restore |
+| `src/CallApps.cs` | Call apps (Teams, Discord): find, read and press their mute button via UI Automation |
 | `src/Settings.cs` | Settings model (JSON), shortcut parsing, reading Wispr Flow's shortcut |
 | `src/SettingsForm.cs` | Settings window, app editor, shortcut recorder |
 | `src/Icons.cs` | Tray and app icons, drawn in code at each size |
