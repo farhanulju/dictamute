@@ -82,6 +82,47 @@ static class AudioCapture
         return result;
     }
 
+    /// <summary>
+    /// Every capture session on every mic, active or not: "pid|state|instance-id". The instance id
+    /// tells two streams of the same app apart (e.g. a recorder stream and a dictation stream).
+    /// </summary>
+    public static List<string> AllSessions()
+    {
+        var result = new List<string>();
+        var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+        IMMDeviceCollection devices;
+        enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, out devices);
+        int count; devices.GetCount(out count);
+        var iid = typeof(IAudioSessionManager2).GUID;
+        for (int i = 0; i < count; i++)
+        {
+            IMMDevice device; devices.Item(i, out device);
+            object o;
+            if (device.Activate(ref iid, 23, IntPtr.Zero, out o) != 0) continue;
+            var manager = (IAudioSessionManager2)o;
+            IAudioSessionEnumerator sessions;
+            if (manager.GetSessionEnumerator(out sessions) != 0) continue;
+            int n; sessions.GetCount(out n);
+            for (int j = 0; j < n; j++)
+            {
+                IAudioSessionControl2 s; sessions.GetSession(j, out s);
+                int state; s.GetState(out state);
+                uint pid; s.GetProcessId(out pid);
+                IntPtr idPtr; s.GetSessionInstanceIdentifier(out idPtr);
+                string id = Marshal.PtrToStringUni(idPtr) ?? "";
+                Marshal.FreeCoTaskMem(idPtr);
+                result.Add(pid + "|" + state + "|" + id);
+                Marshal.ReleaseComObject(s);
+            }
+            Marshal.ReleaseComObject(sessions);
+            Marshal.ReleaseComObject(manager);
+            Marshal.ReleaseComObject(device);
+        }
+        Marshal.ReleaseComObject(devices);
+        Marshal.ReleaseComObject(enumerator);
+        return result;
+    }
+
     public static List<uint> ActivePids()
     {
         var pids = new List<uint>();

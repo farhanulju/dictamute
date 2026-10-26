@@ -29,14 +29,14 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("DictaMute")]
 [assembly: System.Reflection.AssemblyDescription("Mutes only your Teams or Discord call while your dictation app is listening")]
 [assembly: System.Reflection.AssemblyCopyright("MIT License")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
 
 static class Program
 {
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
-    public const string Version = "1.3.0";
+    public const string Version = "1.3.1";
 
     [STAThread]
     static void Main(string[] args)
@@ -156,6 +156,8 @@ class DictaMuteApp : ApplicationContext
         public List<HashSet<int>> Combos;
         public State State = State.Idle;
         public bool Active, WasActive;
+        public bool Exact;            // Active comes from the app's own dictation state (Wispr Flow), not the mic
+        public bool? LoggedExact;
         public DateTime ArmDeadline, LastActive;
     }
 
@@ -335,7 +337,18 @@ class DictaMuteApp : ApplicationContext
                     }
                 }
                 bool inCall = calls.Any(c => c.InCall);
-                foreach (var w in list) w.Active = active.Any(w.Rule.Matches);
+                foreach (var w in list)
+                {
+                    bool? exact = WisprState.AppliesTo(w.Rule) ? WisprState.IsDictating() : null;
+                    w.Exact = exact.HasValue;
+                    w.Active = exact ?? active.Any(w.Rule.Matches);
+                    if (w.LoggedExact != w.Exact)
+                    {
+                        w.LoggedExact = w.Exact;
+                        if (w.Exact) Log(w.Rule.Name + ": following Wispr Flow's own dictation state");
+                        else if (WisprState.AppliesTo(w.Rule)) Log(w.Rule.Name + ": Wispr's dictation state isn't readable; using the shortcut and microphone");
+                    }
+                }
 
                 AppRule armed;
                 while (arms.TryDequeue(out armed)) OnArm(list, armed, inCall);
@@ -358,7 +371,8 @@ class DictaMuteApp : ApplicationContext
     void OnArm(List<Watch> list, AppRule rule, bool inCall)
     {
         var w = list.FirstOrDefault(x => x.Rule == rule);
-        if (w == null || w.State != State.Idle || paused || !inCall) return; // a stop press is seen via the mic going idle
+        if (w == null || w.Exact) return; // the app reports its own dictation state: no need to guess from the shortcut
+        if (w.State != State.Idle || paused || !inCall) return; // a stop press is seen via the mic going idle
         if (w.Active) { Log(rule.Name + ": shortcut, but it's already using the mic; leaving the call alone"); return; }
         Log(rule.Name + ": shortcut, armed (focus: " + Focus.Describe(Focus.Current()) + ")");
         w.State = State.Arming;
@@ -378,8 +392,9 @@ class DictaMuteApp : ApplicationContext
             else switch (w.State)
             {
                 case State.Idle:
-                    // "Whenever it uses the mic" apps start on the idle -> active edge.
-                    if (w.Combos.Count == 0 && w.Active && !w.WasActive) { w.State = State.Listening; Log(w.Rule.Name + ": started listening"); }
+                    // "Whenever it uses the mic" apps, and apps reporting their own dictation state,
+                    // start on the idle -> active edge.
+                    if ((w.Combos.Count == 0 || w.Exact) && w.Active && !w.WasActive) { w.State = State.Listening; Log(w.Rule.Name + ": started listening"); }
                     break;
                 case State.Arming:
                     if (w.Active) { w.State = State.Listening; Log(w.Rule.Name + ": started listening"); }

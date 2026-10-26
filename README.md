@@ -25,11 +25,13 @@ mid-dictation, or DictaMute is paused. Choose which call apps it mutes under **S
 | Mode | Use it for | Example |
 |------|-----------|---------|
 | **Whenever this app starts using the microphone** | Apps that only open the mic while you're talking to them | Claude's voice input |
-| **When I press a shortcut and the app then starts listening** | Apps that also keep the mic open for other things | Wispr Flow (its meeting recorder holds the mic during calls) |
+| **When I press a shortcut and the app then starts listening** | Apps that also keep the mic open for other things | Any app whose mic stays open while idle |
 
 In shortcut mode, enter the **same shortcut you use in that app** — a key combo like `Ctrl+Win`
 or a middle/thumb mouse button. DictaMute only *listens* for it; the app still receives it.
-For Wispr Flow, **Use Wispr Flow's shortcut** reads it straight from Wispr's settings.
+**Wispr Flow is special:** DictaMute reads Wispr's own dictation state (it records the active dictation in its
+settings file), so Wispr works with any of its shortcuts and even while its meeting notetaker is recording.
+The shortcut is only a fallback; **Use Wispr Flow's shortcut** fills it in from Wispr's settings.
 
 | Shortcut mode (Wispr Flow) | Microphone mode (Claude) |
 |---|---|
@@ -87,9 +89,10 @@ when a shortcut fires, which can include meeting names.
   dictation app's startup.
 - **Focus can briefly flicker to the call app.** If pressing its button moves focus to the
   meeting window, DictaMute restores your previous window within ~80 ms.
-- **An app that's already holding the mic can't be detected starting dictation.** If Wispr
-  Flow's mic is already open when you press the shortcut, DictaMute leaves the call alone (and
-  says so in the log).
+- **An app that's already holding the mic can't be detected starting dictation** — except Wispr Flow:
+  DictaMute reads Wispr's own dictation state, so it works even while Wispr's meeting notetaker keeps the
+  mic open for the whole call. For other apps in shortcut mode, if the mic is already open when you press
+  the shortcut, DictaMute leaves the call alone (and says so in the log).
 - **"In a call" means the call app has the microphone open.** Teams and Discord only do that
   during a call (or Discord's mic test in its settings).
 - Relies on each app's button id or English labels (Teams: `microphone-button`; Discord: the

@@ -129,7 +129,9 @@ class SettingsForm : Form
         foreach (var app in working.Apps)
         {
             var item = new ListViewItem(app.Name) { Tag = app, Checked = app.Enabled };
-            item.SubItems.Add(Shortcut.Describe(app.Shortcut));
+            item.SubItems.Add(WisprState.AppliesTo(app) && WisprState.IsDictating().HasValue
+                ? "When Wispr Flow starts dictating"
+                : Shortcut.Describe(app.Shortcut));
             list.Items.Add(item);
         }
         list.EndUpdate();
@@ -184,6 +186,7 @@ class AppDialog : Form
     readonly RadioButton whenever, afterShortcut;
     readonly ShortcutBox shortcut;
     readonly Button detect;
+    readonly Label wisprNote;
     public AppRule Result { get; private set; }
 
     public AppDialog(AppRule rule)
@@ -226,6 +229,12 @@ class AppDialog : Form
         });
         detect.Margin = new Padding(8, 0, 0, 0);
         col.Controls.Add(Indent(Ui.Row(shortcut, detect)));
+        wisprNote = Ui.Text(
+            "DictaMute reads Wispr Flow's own dictation state, so this works with any Wispr shortcut and " +
+            "even while Wispr's notetaker is recording a meeting. The settings above are only a fallback " +
+            "if that state can't be read.", null, Color.FromArgb(0x1A, 0x5F, 0xB4));
+        wisprNote.MaximumSize = new Size(500, 0);
+        col.Controls.Add(Indent(wisprNote));
         shortcut.Enter += delegate { afterShortcut.Checked = true; };
 
         bool hasShortcut = Shortcut.Parse(rule.Shortcut).Count > 0;
@@ -248,6 +257,7 @@ class AppDialog : Form
     void UpdateDetect()
     {
         detect.Visible = process.Text.StartsWith("Wispr", StringComparison.OrdinalIgnoreCase);
+        if (wisprNote != null) wisprNote.Visible = detect.Visible && WisprState.IsDictating().HasValue;
     }
 
     void Accept()
